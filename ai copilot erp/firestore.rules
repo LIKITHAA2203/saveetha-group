@@ -1,0 +1,217 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Document ID: {uid}
+// Fields:
+//   - uid: string (required) - Firebase Auth UID
+//   - email: string (required) - User email
+//   - displayName: string (optional) - User display name
+//   - photoURL: string (optional) - User photo URL
+//   - role: string (optional, enum: ['admin', 'procurement', 'manager']) - User role
+//
+// Collection: vendors
+// Document ID: {vendorId}
+// Fields:
+//   - name: string (required)
+//   - category: string
+//   - contactPerson: string
+//   - email: string (required)
+//   - phone: string
+//   - rating: number
+//   - trustScore: number
+//   - qualityScore: number
+//   - responseSpeed: number
+//
+// Collection: rfqs
+// Document ID: {rfqId}
+// Fields:
+//   - itemName: string (required)
+//   - quantity: number (required)
+//   - requiredDate: string (ISO date)
+//   - priority: string (enum: ['low', 'medium', 'high'])
+//   - status: string (enum: ['open', 'closed', 'awarded'])
+//   - assignedVendors: list (strings)
+//   - createdAt: string (ISO date)
+//
+// Collection: quotes
+// Document ID: {quoteId}
+// Fields:
+//   - rfqId: string (required)
+//   - vendorId: string (required)
+//   - vendorName: string
+//   - price: number (required)
+//   - deliveryDays: number
+//   - riskScore: number
+//   - recommendationScore: number
+//
+// Collection: purchaseOrders
+// Document ID: {poId}
+// Fields:
+//   - quoteId: string (required)
+//   - vendorId: string (required)
+//   - totalAmount: number (required)
+//   - status: string (enum: ['pending', 'approved', 'shipped', 'delivered'])
+//   - createdAt: string (ISO date)
+//   - financeStatus: string (enum: ['unpaid', 'partially_paid', 'paid'])
+//
+// Collection: inventory
+// Document ID: {itemId}
+// Fields:
+//   - name: string (required)
+//   - currentStock: number (required)
+//   - reorderLevel: number
+//   - dailyUsage: number
+//   - leadTime: number
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+         request.auth.token.email == "jayalakshmi8806@gmail.com");
+    }
+
+    function isProcurement() {
+      return isAuthenticated() && 
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'procurement']) ||
+         request.auth.token.email == "jayalakshmi8806@gmail.com");
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function hasOnlyAllowedFields(allowedFields) {
+      return request.resource.data.keys().hasOnly(allowedFields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             hasOnlyAllowedFields(['uid', 'email', 'displayName', 'photoURL', 'role', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             (!('role' in data) || data.role in ['admin', 'procurement', 'manager']) &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
+             (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() < 500));
+    }
+
+    function isValidVendor(data) {
+      return data.keys().hasAll(['name', 'email']) &&
+             hasOnlyAllowedFields(['name', 'category', 'contactPerson', 'email', 'phone', 'rating', 'trustScore', 'pastPerformance', 'deliverySuccessRate', 'qualityScore', 'responseSpeed', 'createdAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             isValidEmail(data.email) &&
+             (!('rating' in data) || (data.rating is number && data.rating >= 0 && data.rating <= 5));
+    }
+
+    function isValidRFQ(data) {
+      return data.keys().hasAll(['itemName', 'quantity', 'status']) &&
+             hasOnlyAllowedFields(['itemName', 'quantity', 'requiredDate', 'priority', 'status', 'assignedVendors', 'createdAt']) &&
+             data.itemName is string && data.itemName.size() > 0 && data.itemName.size() < 200 &&
+             data.quantity is number && data.quantity > 0 &&
+             data.status in ['open', 'closed', 'awarded'] &&
+             (!('priority' in data) || data.priority in ['low', 'medium', 'high']);
+    }
+
+    function isValidQuote(data) {
+      return data.keys().hasAll(['rfqId', 'vendorId', 'price']) &&
+             hasOnlyAllowedFields(['rfqId', 'vendorId', 'vendorName', 'itemName', 'quantity', 'price', 'deliveryDays', 'tax', 'warranty', 'paymentTerms', 'extractedAt', 'riskScore', 'recommendationScore']) &&
+             data.rfqId is string && data.vendorId is string &&
+             data.price is number && data.price >= 0;
+    }
+
+    function isValidPO(data) {
+      return data.keys().hasAll(['quoteId', 'vendorId', 'totalAmount', 'status']) &&
+             hasOnlyAllowedFields(['quoteId', 'vendorId', 'vendorName', 'itemName', 'quantity', 'unitPrice', 'totalAmount', 'status', 'createdAt', 'deliveryDays', 'paymentStatus']) &&
+             data.totalAmount is number && data.totalAmount >= 0 &&
+             data.status in ['pending', 'approved', 'shipped', 'delivered'] &&
+             (!('paymentStatus' in data) || data.paymentStatus in ['unpaid', 'partially paid', 'paid']);
+    }
+
+    function isValidInventory(data) {
+      return data.keys().hasAll(['name', 'currentStock']) &&
+             hasOnlyAllowedFields(['name', 'currentStock', 'reorderLevel', 'dailyUsage', 'leadTime']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.currentStock is number && data.currentStock >= 0;
+    }
+
+    function isUnchanged(field) {
+      return !(field in request.resource.data) || request.resource.data[field] == resource.data[field];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // PII Protection: Only owner can read their own profile
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      (request.resource.data.role == 'procurement' || isAdmin());
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      isUnchanged('role') || isAdmin();
+    }
+
+    match /vendors/{vendorId} {
+      allow read: if isAuthenticated();
+      allow create: if isProcurement() && isValidVendor(request.resource.data);
+      allow update: if isProcurement() && isValidVendor(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /rfqs/{rfqId} {
+      allow read: if isAuthenticated();
+      allow create: if isProcurement() && isValidRFQ(request.resource.data);
+      allow update: if isProcurement() && isValidRFQ(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /quotes/{quoteId} {
+      allow read: if isAuthenticated();
+      allow create: if isProcurement() && isValidQuote(request.resource.data);
+      allow update: if isProcurement() && isValidQuote(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /purchaseOrders/{poId} {
+      allow read: if isAuthenticated();
+      allow create: if isProcurement() && isValidPO(request.resource.data);
+      allow update: if isProcurement() && isValidPO(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /inventory/{itemId} {
+      allow read: if isAuthenticated();
+      allow create: if isProcurement() && isValidInventory(request.resource.data);
+      allow update: if isProcurement() && isValidInventory(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
