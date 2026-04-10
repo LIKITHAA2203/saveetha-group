@@ -1,0 +1,182 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Document ID: {uid}
+// Fields:
+//   - uid: string (required) - Firebase Auth UID
+//   - email: string (required) - User email
+//   - displayName: string (optional) - User display name
+//   - photoURL: string (optional) - User photo URL
+//   - role: string (optional, enum: ['admin', 'procurement', 'manager']) - User role
+//
+// Collection: vendors
+// Document ID: {vendorId}
+// Fields:
+//   - name: string (required)
+//   - category: string
+//   - contactPerson: string
+//   - email: string (required)
+//   - phone: string
+//   - rating: number
+//   - trustScore: number
+//   - qualityScore: number
+//   - responseSpeed: number
+//
+// Collection: rfqs
+// Document ID: {rfqId}
+// Fields:
+//   - itemName: string (required)
+//   - quantity: number (required)
+//   - requiredDate: string (ISO date)
+//   - priority: string (enum: ['low', 'medium', 'high'])
+//   - status: string (enum: ['open', 'closed', 'awarded'])
+//   - assignedVendors: list (strings)
+//   - createdAt: string (ISO date)
+//
+// Collection: quotes
+// Document ID: {quoteId}
+// Fields:
+//   - rfqId: string (required)
+//   - vendorId: string (required)
+//   - vendorName: string
+//   - price: number (required)
+//   - deliveryDays: number
+//   - riskScore: number
+//   - recommendationScore: number
+//
+// Collection: purchaseOrders
+// Document ID: {poId}
+// Fields:
+//   - quoteId: string (required)
+//   - vendorId: string (required)
+//   - totalAmount: number (required)
+//   - status: string (enum: ['pending', 'approved', 'shipped', 'delivered'])
+//   - createdAt: string (ISO date)
+//   - financeStatus: string (enum: ['unpaid', 'partially_paid', 'paid'])
+//
+// Collection: inventory
+// Document ID: {itemId}
+// Fields:
+//   - name: string (required)
+//   - currentStock: number (required)
+//   - reorderLevel: number
+//   - dailyUsage: number
+//   - leadTime: number
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "jayalakshmi8806@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isProcurement() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'procurement']);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             (!('role' in data) || data.role in ['admin', 'procurement', 'manager']);
+    }
+
+    function isValidVendor(data) {
+      return data.keys().hasAll(['name', 'email']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             isValidEmail(data.email);
+    }
+
+    function isValidRFQ(data) {
+      return data.keys().hasAll(['itemName', 'quantity', 'status']) &&
+             data.itemName is string && data.itemName.size() > 0 &&
+             data.quantity is number && data.quantity > 0 &&
+             data.status in ['open', 'closed', 'awarded'];
+    }
+
+    function isValidQuote(data) {
+      return data.keys().hasAll(['rfqId', 'vendorId', 'price']) &&
+             data.rfqId is string && data.vendorId is string &&
+             data.price is number && data.price >= 0;
+    }
+
+    function isValidPO(data) {
+      return data.keys().hasAll(['quoteId', 'vendorId', 'totalAmount', 'status']) &&
+             data.totalAmount is number && data.totalAmount >= 0 &&
+             data.status in ['pending', 'approved', 'shipped', 'delivered'];
+    }
+
+    function isValidInventory(data) {
+      return data.keys().hasAll(['name', 'currentStock']) &&
+             data.name is string && data.currentStock is number;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      (request.resource.data.role == resource.data.role || isAdmin());
+    }
+
+    match /vendors/{vendorId} {
+      allow read: if isAuthenticated();
+      allow write: if isProcurement() && isValidVendor(request.resource.data);
+    }
+
+    match /rfqs/{rfqId} {
+      allow read: if isAuthenticated();
+      allow write: if isProcurement() && isValidRFQ(request.resource.data);
+    }
+
+    match /quotes/{quoteId} {
+      allow read: if isAuthenticated();
+      allow write: if isProcurement() && isValidQuote(request.resource.data);
+    }
+
+    match /purchaseOrders/{poId} {
+      allow read: if isAuthenticated();
+      allow write: if isProcurement() && isValidPO(request.resource.data);
+    }
+
+    match /inventory/{itemId} {
+      allow read: if isAuthenticated();
+      allow write: if isProcurement() && isValidInventory(request.resource.data);
+    }
+
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
